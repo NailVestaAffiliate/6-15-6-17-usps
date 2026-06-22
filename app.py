@@ -1,15 +1,11 @@
 """
 NailVesta 達人補發追蹤 — Streamlit 操作介面
 執行：streamlit run app.py
-依賴：streamlit pandas openpyxl
 """
 import io
 import os
 import pandas as pd
 import streamlit as st
-from openpyxl import Workbook
-from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
-from openpyxl.utils import get_column_letter
 
 st.set_page_config(page_title="達人補發追蹤", page_icon="💅", layout="wide")
 
@@ -68,6 +64,13 @@ def load_df():
 
 
 def to_excel(df):
+    """用 openpyxl 產生帶格式的 Excel；若環境沒裝 openpyxl 則回傳 None。"""
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+        from openpyxl.utils import get_column_letter
+    except ImportError:
+        return None
     wb = Workbook(); ws = wb.active; ws.title = "達人補發追蹤"
     navy = PatternFill("solid", fgColor="1F3864"); alt = PatternFill("solid", fgColor="EAEFF7")
     white = Font(name="Arial", bold=True, color="FFFFFF", size=10); base = Font(name="Arial", size=10)
@@ -141,15 +144,22 @@ edited = st.data_editor(
               "物流單號(LV/HB)", "USPS Tracking"],
 )
 
-# 把編輯結果寫回主表
 st.session_state.df.loc[edited.index] = edited
 
 b1, b2, b3 = st.columns(3)
 if b1.button("💾 儲存進度", use_container_width=True):
     st.session_state.df.to_csv(SAVE_FILE, index=False)
     st.success("已儲存")
-b2.download_button("📥 匯出 Excel", to_excel(st.session_state.df),
-                   "達人補發追蹤.xlsx", use_container_width=True)
+
+xlsx = to_excel(st.session_state.df)
+if xlsx is not None:
+    b2.download_button("📥 匯出 Excel", xlsx, "達人補發追蹤.xlsx",
+                       use_container_width=True)
+else:
+    b2.download_button("📥 匯出 CSV",
+                       st.session_state.df.to_csv(index=False).encode("utf-8-sig"),
+                       "達人補發追蹤.csv", use_container_width=True)
+
 if b3.button("🔄 重置勾選", use_container_width=True):
     st.session_state.df = base_df()
     if os.path.exists(SAVE_FILE):
