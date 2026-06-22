@@ -104,26 +104,35 @@ def load_df():
     return base_df()
 
 
-def _migrate(df):
-    """把任何舊版 / 缺欄的表補成目前的欄位結構。"""
-    df = df.copy()
+def _migrate(saved):
+    """固定資料(單號/地址/款式)一律取自內建 RAW；存檔只覆蓋進度欄，用 Handle 對應。"""
+    base = base_df().set_index("達人 Handle")
+    saved = saved.copy()
+
+    # 舊版欄名 → 新版欄名
+    rename = {"物流單號(LV/HB)": "原單號(LV/HB)", "物流單號 (LV/HB)": "原單號(LV/HB)",
+              "USPS Tracking": "原 USPS Tracking"}
+    saved = saved.rename(columns={k: v for k, v in rename.items() if k in saved.columns})
+
     # 舊版雙勾選欄 → 新狀態欄
-    if "狀態" not in df.columns and "我們是否補發" in df.columns:
+    if "狀態" not in saved.columns and "我們是否補發" in saved.columns:
         def to_status(r):
-            paid = str(r.get("我們是否補發", "")).lower() in ("true", "1", "✓", "yes")
-            noti = str(r.get("達人是否通知", "")).lower() in ("true", "1", "✓", "yes")
-            if paid:
+            yes = lambda v: str(v).lower() in ("true", "1", "✓", "yes")
+            if yes(r.get("我們是否補發", "")):
                 return "🔵 已補發"
-            if noti:
+            if yes(r.get("達人是否通知", "")):
                 return "🟡 達人已通知"
             return "⚪ 待達人回報"
-        df["狀態"] = df.apply(to_status, axis=1)
-    # 補齊所有缺少的欄位
-    defaults = {"狀態": DEFAULT_STATUS, "補發日期": "", "補發新單號": "", "備註": ""}
-    for c in COLS:
-        if c not in df.columns:
-            df[c] = defaults.get(c, "")
-    return df[COLS]
+        saved["狀態"] = saved.apply(to_status, axis=1)
+
+    # 只把進度欄依 Handle 合併回 base
+    if "達人 Handle" in saved.columns:
+        saved = saved.set_index("達人 Handle")
+        idx = base.index.intersection(saved.index)
+        for c in ["狀態", "補發日期", "補發新單號", "備註"]:
+            if c in saved.columns:
+                base.loc[idx, c] = saved.loc[idx, c].fillna("")
+    return base.reset_index()[COLS]
 
 
 def save_df(df):
