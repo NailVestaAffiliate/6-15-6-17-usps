@@ -54,13 +54,19 @@ RAW = [
 ]
 
 DATA_COLS = ["達人 Handle","日期","姓名","Email","電話","地址","款式","尺寸","原單號(LV/HB)","原 USPS Tracking"]
-TRACK_COLS = ["狀態","補發日期","補發新單號","備註"]
+TRACK_COLS = ["狀態","LV/HB 是否送達","補發日期","補發新單號","備註"]
 COLS = DATA_COLS + TRACK_COLS
+BOOL_COLS = ["LV/HB 是否送達"]
+
+
+def _truthy(v):
+    return str(v).strip().lower() in ("true", "1", "✓", "yes", "是", "y", "t")
 
 
 def base_df():
     df = pd.DataFrame(RAW, columns=DATA_COLS)
     df["狀態"] = DEFAULT_STATUS
+    df["LV/HB 是否送達"] = False
     df["補發日期"] = ""
     df["補發新單號"] = ""
     df["備註"] = ""
@@ -132,6 +138,9 @@ def _migrate(saved):
         for c in ["狀態", "補發日期", "補發新單號", "備註"]:
             if c in saved.columns:
                 base.loc[idx, c] = saved.loc[idx, c].fillna("")
+        for c in BOOL_COLS:
+            if c in saved.columns:
+                base.loc[idx, c] = saved.loc[idx, c].map(_truthy)
     return base.reset_index()[COLS]
 
 
@@ -168,11 +177,17 @@ def to_excel(df):
     for c in range(1, len(out_cols) + 1):
         cell = ws.cell(1, c); cell.fill = navy; cell.font = white; cell.alignment = ctr; cell.border = border
     for i, (_, r) in enumerate(df.iterrows(), start=1):
-        ws.append([i] + [r[c] for c in COLS]); rn = i + 1
+        vals = [i]
+        for c in COLS:
+            v = r[c]
+            if c in BOOL_COLS:
+                v = "✓" if _truthy(v) else ""
+            vals.append(v)
+        ws.append(vals); rn = i + 1
         fill = PatternFill("solid", fgColor=color.get(r["狀態"], "FFFFFF"))
         for c in range(1, len(out_cols) + 1):
             cell = ws.cell(rn, c); cell.font = base; cell.border = border; cell.fill = fill
-            cell.alignment = ctr if out_cols[c-1] in ("序號","達人 Handle","尺寸","狀態") else lft
+            cell.alignment = ctr if out_cols[c-1] in ("序號","達人 Handle","尺寸","狀態","LV/HB 是否送達") else lft
         for cn in ("電話","原單號(LV/HB)","原 USPS Tracking","補發新單號"):
             ws.cell(rn, out_cols.index(cn)+1).number_format = "@"
         # 單號加 USPS 超連結
@@ -182,7 +197,7 @@ def to_excel(df):
             url = track_url(cell.value)
             if url:
                 cell.hyperlink = url; cell.font = link_font
-    widths = [6,20,12,18,26,15,34,24,7,16,22,16,14,22,22]
+    widths = [6,20,12,18,26,15,34,24,7,16,22,16,14,16,22,22]
     for idx, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(idx)].width = w
     ws.freeze_panes = "B2"; ws.row_dimensions[1].height = 28
@@ -220,20 +235,22 @@ if flt != "全部":
 
 # 加入可點擊的 USPS 查詢連結欄（點單號直接開新分頁查件）
 disp = view.copy()
+disp["LV/HB 是否送達"] = disp["LV/HB 是否送達"].map(_truthy)
 disp["🔗 LV/HB 查詢"] = disp["原單號(LV/HB)"].map(track_url)
 disp["🔗 USPS 查詢"] = disp["原 USPS Tracking"].map(track_url)
 disp["🔗 補發查詢"] = disp["補發新單號"].map(track_url)
 
 LINK_COLS = ["🔗 LV/HB 查詢", "🔗 USPS 查詢", "🔗 補發查詢"]
-EDITABLE = ["狀態", "補發日期", "補發新單號", "備註"]
+EDITABLE = ["狀態", "LV/HB 是否送達", "補發日期", "補發新單號", "備註"]
 
 edited = st.data_editor(
     disp, use_container_width=True, hide_index=True, num_rows="fixed", key="editor",
     column_order=["狀態","達人 Handle","姓名","款式","尺寸",
-                  "🔗 USPS 查詢","🔗 LV/HB 查詢","補發日期","補發新單號","🔗 補發查詢",
+                  "🔗 USPS 查詢","🔗 LV/HB 查詢","LV/HB 是否送達","補發日期","補發新單號","🔗 補發查詢",
                   "備註","電話","Email","地址","日期","原單號(LV/HB)","原 USPS Tracking"],
     column_config={
         "狀態": st.column_config.SelectboxColumn("狀態", options=STATUS, width="medium", required=True),
+        "LV/HB 是否送達": st.column_config.CheckboxColumn("LV/HB 是否送達", help="LV/HB 單號是否已送達", width="small"),
         "補發日期": st.column_config.TextColumn("補發日期", help="YYYY/MM/DD", width="small"),
         "補發新單號": st.column_config.TextColumn("補發新單號", help="補發後新的 USPS 追蹤碼，填了下一欄自動產生查詢連結", width="medium"),
         "備註": st.column_config.TextColumn("備註", width="medium"),
