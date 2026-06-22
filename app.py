@@ -92,15 +92,38 @@ def load_df():
             recs = ws.get_all_records()
             if recs:
                 df = pd.DataFrame(recs).astype(str).fillna("")
-                for c in COLS:
-                    if c not in df.columns:
-                        df[c] = ""
-                return df[COLS]
+                return _migrate(df)
         except Exception:
             pass
     if os.path.exists(SAVE_FILE):
-        return pd.read_csv(SAVE_FILE, dtype=str).fillna("")[COLS]
+        try:
+            df = pd.read_csv(SAVE_FILE, dtype=str).fillna("")
+            return _migrate(df)
+        except Exception:
+            pass
     return base_df()
+
+
+def _migrate(df):
+    """把任何舊版 / 缺欄的表補成目前的欄位結構。"""
+    df = df.copy()
+    # 舊版雙勾選欄 → 新狀態欄
+    if "狀態" not in df.columns and "我們是否補發" in df.columns:
+        def to_status(r):
+            paid = str(r.get("我們是否補發", "")).lower() in ("true", "1", "✓", "yes")
+            noti = str(r.get("達人是否通知", "")).lower() in ("true", "1", "✓", "yes")
+            if paid:
+                return "🔵 已補發"
+            if noti:
+                return "🟡 達人已通知"
+            return "⚪ 待達人回報"
+        df["狀態"] = df.apply(to_status, axis=1)
+    # 補齊所有缺少的欄位
+    defaults = {"狀態": DEFAULT_STATUS, "補發日期": "", "補發新單號": "", "備註": ""}
+    for c in COLS:
+        if c not in df.columns:
+            df[c] = defaults.get(c, "")
+    return df[COLS]
 
 
 def save_df(df):
