@@ -1,6 +1,7 @@
 """
-NailVesta 達人補發追蹤 — Streamlit 操作介面
+NailVesta 達人補發追蹤 — Streamlit 改良版
 執行：streamlit run app.py
+存檔：有設定 Google Sheets 就寫雲端、多人共用；沒設定就寫本機 CSV。
 """
 import io
 import os
@@ -11,7 +12,17 @@ st.set_page_config(page_title="達人補發追蹤", page_icon="💅", layout="wi
 
 SAVE_FILE = "達人補發追蹤_state.csv"
 
-# 達人, 日期, 姓名, Email, 電話, 地址, 款式, 尺寸, 物流單號(LV/HB), USPS Tracking
+# 狀態流程（emoji 當顏色用，一眼看出卡在哪一步）
+STATUS = ["⚪ 待達人回報", "🟡 達人已通知", "🔵 已補發", "🟢 已送達結案"]
+DEFAULT_STATUS = "🟡 達人已通知"   # 此清單都是已回報未收到，預設已通知
+
+# USPS 官方追蹤網址
+USPS_BASE = "https://tools.usps.com/go/TrackConfirmAction?tLabels="
+def track_url(num):
+    n = str(num).replace(" ", "").strip()
+    return USPS_BASE + n if n and n.lower() != "nan" else ""
+
+# 達人, 日期, 姓名, Email, 電話, 地址, 款式, 尺寸, 原單號(LV/HB), 原 USPS Tracking
 RAW = [
  ("xiomaradenise_","2026/06/15","Xiomara DiGiovanna","xiomaradigiovanna@gmail.com","8654123598","1748 Quail Ridge Loop, Kissimmee, FL 34744","Pastel Coast, Sunlit Petals, Aloha Bloom","M","LV068190166US","9300110993319120459047"),
  ("uhhhnegin-4","2026/06/15","Negin Mandavi","neginmandavi@gmail.com","8912354789","15950 Chase Hill Blvd, San Antonio, TX 78256","Berry Bowtie, Mochi Blossom","S","LV068190197US","9300110993319120459061"),
@@ -42,37 +53,81 @@ RAW = [
  ("lexbillionzz-76","2026/06/17","Lex Billionz","Lexb.business@gmail.com","4589612354","3580 E Commerce Way, Sacramento, CA 95834","Prism Aura, Citrus Veil, Cowgirl Charm, Sunflower Safari","M","HB089165462US","9300110663319120128976"),
 ]
 
-COLS = ["達人 Handle","日期","姓名","Email","電話","地址","款式","尺寸",
-        "物流單號(LV/HB)","USPS Tracking","達人是否通知","我們是否補發","備註"]
+DATA_COLS = ["達人 Handle","日期","姓名","Email","電話","地址","款式","尺寸","原單號(LV/HB)","原 USPS Tracking"]
+TRACK_COLS = ["狀態","補發日期","補發新單號","備註"]
+COLS = DATA_COLS + TRACK_COLS
 
 
 def base_df():
-    df = pd.DataFrame(RAW, columns=COLS[:10])
-    df["達人是否通知"] = False
-    df["我們是否補發"] = False
+    df = pd.DataFrame(RAW, columns=DATA_COLS)
+    df["狀態"] = DEFAULT_STATUS
+    df["補發日期"] = ""
+    df["補發新單號"] = ""
     df["備註"] = ""
     return df[COLS]
 
 
+# ---------- 存檔：優先 Google Sheets，否則本機 CSV ----------
+def _gsheet():
+    """回傳 worksheet 物件；未設定或套件缺失則回傳 None。"""
+    try:
+        if "gcp_service_account" not in st.secrets:
+            return None
+        import gspread
+        from google.oauth2.service_account import Credentials
+        scopes = ["https://www.googleapis.com/auth/spreadsheets"]
+        creds = Credentials.from_service_account_info(
+            dict(st.secrets["gcp_service_account"]), scopes=scopes)
+        gc = gspread.authorize(creds)
+        sh = gc.open_by_key(st.secrets["gsheet_key"])
+        return sh.sheet1
+    except Exception:
+        return None
+
+
 def load_df():
+    ws = _gsheet()
+    if ws is not None:
+        try:
+            recs = ws.get_all_records()
+            if recs:
+                df = pd.DataFrame(recs).astype(str).fillna("")
+                for c in COLS:
+                    if c not in df.columns:
+                        df[c] = ""
+                return df[COLS]
+        except Exception:
+            pass
     if os.path.exists(SAVE_FILE):
-        df = pd.read_csv(SAVE_FILE, dtype=str).fillna("")
-        for c in ["達人是否通知", "我們是否補發"]:
-            df[c] = df[c].astype(str).str.lower().isin(["true", "1", "✓", "yes"])
-        return df[COLS]
+        return pd.read_csv(SAVE_FILE, dtype=str).fillna("")[COLS]
     return base_df()
 
 
+def save_df(df):
+    df = df.astype(str)
+    ws = _gsheet()
+    if ws is not None:
+        try:
+            ws.clear()
+            ws.update([df.columns.tolist()] + df.values.tolist())
+            return "Google Sheets（雲端共用）"
+        except Exception:
+            pass
+    df.to_csv(SAVE_FILE, index=False)
+    return "本機 CSV"
+
+
 def to_excel(df):
-    """用 openpyxl 產生帶格式的 Excel；若環境沒裝 openpyxl 則回傳 None。"""
     try:
         from openpyxl import Workbook
         from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
         from openpyxl.utils import get_column_letter
     except ImportError:
         return None
+    color = {"⚪ 待達人回報": "F2F2F2", "🟡 達人已通知": "FFF2CC",
+             "🔵 已補發": "DDEBF7", "🟢 已送達結案": "E2EFDA"}
     wb = Workbook(); ws = wb.active; ws.title = "達人補發追蹤"
-    navy = PatternFill("solid", fgColor="1F3864"); alt = PatternFill("solid", fgColor="EAEFF7")
+    navy = PatternFill("solid", fgColor="1F3864")
     white = Font(name="Arial", bold=True, color="FFFFFF", size=10); base = Font(name="Arial", size=10)
     thin = Side(style="thin", color="BFBFBF"); border = Border(thin, thin, thin, thin)
     ctr = Alignment("center", "center", wrap_text=True); lft = Alignment("left", "center", wrap_text=True)
@@ -81,20 +136,24 @@ def to_excel(df):
     for c in range(1, len(out_cols) + 1):
         cell = ws.cell(1, c); cell.fill = navy; cell.font = white; cell.alignment = ctr; cell.border = border
     for i, (_, r) in enumerate(df.iterrows(), start=1):
-        ws.append([i, r["達人 Handle"], r["日期"], r["姓名"], r["Email"], str(r["電話"]).strip(),
-                   r["地址"], r["款式"], r["尺寸"], r["物流單號(LV/HB)"], str(r["USPS Tracking"]).replace(" ", ""),
-                   "✓" if r["達人是否通知"] else "", "✓" if r["我們是否補發"] else "", r["備註"]])
-        rn = i + 1
+        ws.append([i] + [r[c] for c in COLS]); rn = i + 1
+        fill = PatternFill("solid", fgColor=color.get(r["狀態"], "FFFFFF"))
         for c in range(1, len(out_cols) + 1):
-            cell = ws.cell(rn, c); cell.font = base; cell.border = border
-            cell.alignment = ctr if c in (1, 3, 9, 12, 13) else lft
-            if i % 2 == 0: cell.fill = alt
-        for col in (6, 10, 11):
-            ws.cell(rn, col).number_format = "@"
-    widths = [6, 20, 12, 20, 28, 16, 38, 26, 8, 18, 24, 12, 12, 22]
+            cell = ws.cell(rn, c); cell.font = base; cell.border = border; cell.fill = fill
+            cell.alignment = ctr if out_cols[c-1] in ("序號","達人 Handle","尺寸","狀態") else lft
+        for cn in ("電話","原單號(LV/HB)","原 USPS Tracking","補發新單號"):
+            ws.cell(rn, out_cols.index(cn)+1).number_format = "@"
+        # 單號加 USPS 超連結
+        link_font = Font(name="Arial", size=10, color="0563C1", underline="single")
+        for cn in ("原單號(LV/HB)","原 USPS Tracking","補發新單號"):
+            cell = ws.cell(rn, out_cols.index(cn)+1)
+            url = track_url(cell.value)
+            if url:
+                cell.hyperlink = url; cell.font = link_font
+    widths = [6,20,12,18,26,15,34,24,7,16,22,16,14,22,22]
     for idx, w in enumerate(widths, start=1):
         ws.column_dimensions[get_column_letter(idx)].width = w
-    ws.freeze_panes = "A2"; ws.row_dimensions[1].height = 28
+    ws.freeze_panes = "B2"; ws.row_dimensions[1].height = 28
     buf = io.BytesIO(); wb.save(buf); return buf.getvalue()
 
 
@@ -106,62 +165,75 @@ if "df" not in st.session_state:
     st.session_state.df = load_df()
 df = st.session_state.df
 
-c1, c2, c3, c4 = st.columns(4)
+cnt = df["狀態"].value_counts()
+c1, c2, c3, c4, c5 = st.columns(5)
 c1.metric("達人總數", len(df))
-c2.metric("已通知我們", int(df["達人是否通知"].sum()))
-c3.metric("已補發", int(df["我們是否補發"].sum()))
-pending = int((df["達人是否通知"] & ~df["我們是否補發"]).sum())
-c4.metric("待補發", pending)
+c2.metric("⚪ 待回報", int(cnt.get("⚪ 待達人回報", 0)))
+c3.metric("🟡 待補發", int(cnt.get("🟡 達人已通知", 0)))
+c4.metric("🔵 已補發在途", int(cnt.get("🔵 已補發", 0)))
+c5.metric("🟢 已結案", int(cnt.get("🟢 已送達結案", 0)))
 
 f1, f2 = st.columns([3, 1])
 kw = f1.text_input("🔍 搜尋（達人 / 姓名 / 款式 / 單號）", "")
-flt = f2.selectbox("篩選", ["全部", "已通知未補發", "未通知", "已補發"])
+flt = f2.selectbox("篩選狀態", ["全部"] + STATUS)
 
 view = df.copy()
 if kw:
     m = pd.Series(False, index=view.index)
-    for col in ["達人 Handle", "姓名", "款式", "物流單號(LV/HB)", "USPS Tracking"]:
+    for col in ["達人 Handle", "姓名", "款式", "原單號(LV/HB)", "原 USPS Tracking", "補發新單號"]:
         m |= view[col].astype(str).str.contains(kw, case=False, na=False)
     view = view[m]
-if flt == "已通知未補發":
-    view = view[view["達人是否通知"] & ~view["我們是否補發"]]
-elif flt == "未通知":
-    view = view[~view["達人是否通知"]]
-elif flt == "已補發":
-    view = view[view["我們是否補發"]]
+if flt != "全部":
+    view = view[view["狀態"] == flt]
+
+# 加入可點擊的 USPS 查詢連結欄（點單號直接開新分頁查件）
+disp = view.copy()
+disp["🔗 LV/HB 查詢"] = disp["原單號(LV/HB)"].map(track_url)
+disp["🔗 USPS 查詢"] = disp["原 USPS Tracking"].map(track_url)
+disp["🔗 補發查詢"] = disp["補發新單號"].map(track_url)
+
+LINK_COLS = ["🔗 LV/HB 查詢", "🔗 USPS 查詢", "🔗 補發查詢"]
+EDITABLE = ["狀態", "補發日期", "補發新單號", "備註"]
 
 edited = st.data_editor(
-    view, use_container_width=True, hide_index=True, num_rows="fixed", key="editor",
+    disp, use_container_width=True, hide_index=True, num_rows="fixed", key="editor",
+    column_order=["狀態","達人 Handle","姓名","款式","尺寸",
+                  "🔗 USPS 查詢","🔗 LV/HB 查詢","補發日期","補發新單號","🔗 補發查詢",
+                  "備註","電話","Email","地址","日期","原單號(LV/HB)","原 USPS Tracking"],
     column_config={
-        "達人是否通知": st.column_config.CheckboxColumn("達人是否通知", width="small"),
-        "我們是否補發": st.column_config.CheckboxColumn("我們是否補發", width="small"),
+        "狀態": st.column_config.SelectboxColumn("狀態", options=STATUS, width="medium", required=True),
+        "補發日期": st.column_config.TextColumn("補發日期", help="YYYY/MM/DD", width="small"),
+        "補發新單號": st.column_config.TextColumn("補發新單號", help="補發後新的 USPS 追蹤碼，填了下一欄自動產生查詢連結", width="medium"),
         "備註": st.column_config.TextColumn("備註", width="medium"),
-        "地址": st.column_config.TextColumn("地址", width="large"),
         "款式": st.column_config.TextColumn("款式", width="large"),
-        "Email": st.column_config.TextColumn("Email", width="medium"),
+        "地址": st.column_config.TextColumn("地址", width="large"),
+        "🔗 USPS 查詢": st.column_config.LinkColumn("🔗 USPS 查詢", display_text=r"tLabels=(.+)", help="點擊查 USPS 物流", width="medium"),
+        "🔗 LV/HB 查詢": st.column_config.LinkColumn("🔗 LV/HB 查詢", display_text=r"tLabels=(.+)", help="點擊查 LV/HB 單號", width="medium"),
+        "🔗 補發查詢": st.column_config.LinkColumn("🔗 補發查詢", display_text=r"tLabels=(.+)", help="點擊查補發單號", width="medium"),
     },
-    disabled=["達人 Handle", "日期", "姓名", "Email", "電話", "地址", "款式", "尺寸",
-              "物流單號(LV/HB)", "USPS Tracking"],
+    disabled=DATA_COLS + LINK_COLS,
 )
-
-st.session_state.df.loc[edited.index] = edited
+# 只把可編輯欄位寫回主表（連結欄是即時計算，不回寫）
+for c in EDITABLE:
+    st.session_state.df.loc[edited.index, c] = edited[c]
 
 b1, b2, b3 = st.columns(3)
-if b1.button("💾 儲存進度", use_container_width=True):
-    st.session_state.df.to_csv(SAVE_FILE, index=False)
-    st.success("已儲存")
+if b1.button("💾 儲存進度", use_container_width=True, type="primary"):
+    where = save_df(st.session_state.df)
+    st.success(f"已儲存到：{where}")
 
 xlsx = to_excel(st.session_state.df)
 if xlsx is not None:
-    b2.download_button("📥 匯出 Excel", xlsx, "達人補發追蹤.xlsx",
-                       use_container_width=True)
+    b2.download_button("📥 匯出 Excel", xlsx, "達人補發追蹤.xlsx", use_container_width=True)
 else:
     b2.download_button("📥 匯出 CSV",
                        st.session_state.df.to_csv(index=False).encode("utf-8-sig"),
                        "達人補發追蹤.csv", use_container_width=True)
 
-if b3.button("🔄 重置勾選", use_container_width=True):
+if b3.button("🔄 重置", use_container_width=True):
     st.session_state.df = base_df()
     if os.path.exists(SAVE_FILE):
         os.remove(SAVE_FILE)
     st.rerun()
+
+st.caption("狀態流程：⚪ 待達人回報 → 🟡 達人已通知（待補發）→ 🔵 已補發 → 🟢 已送達結案")
